@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>股票模拟交易系统</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">股</span>
+    <div class="brand-text">
+      <h1>股票模拟交易系统</h1>
+      <p id="asOfText" class="sub">加载中…</p>
+    </div>
+  </div>
+  <button id="refreshBtn" class="btn ghost" type="button">刷新</button>
+</header>
+
+<div id="warningBar" class="warning-bar hidden"></div>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-view="overview" role="tab" type="button">总览</button>
+  <button class="tab" data-view="positions" role="tab" type="button">当前持仓</button>
+  <button class="tab" data-view="trades" role="tab" type="button">交易流水</button>
+  <button class="tab" data-view="closed" role="tab" type="button">已平仓明细</button>
+</nav>
+
+<main>
+  <section id="view-overview" class="view active">
+    <div class="hero card">
+      <div class="hero-main">
+        <span class="hero-label">总体盈利百分比（已实现）</span>
+        <strong id="heroPct" class="hero-value">—</strong>
+        <span id="heroSub" class="hero-sub">暂无已平仓交易</span>
+      </div>
+      <div class="hero-side">
+        <div class="hero-block">
+          <span>累计收益（复利）</span>
+          <strong id="heroCumulative">—</strong>
+        </div>
+        <div class="hero-block">
+          <span>盈亏数（价差）</span>
+          <strong id="heroProfit">—</strong>
+        </div>
+        <div class="hero-block">
+          <span>总买入成本</span>
+          <strong id="heroCost">—</strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="metric-grid" id="metricGrid"></div>
+
+    <div class="two-col">
+      <div class="card">
+        <h2 class="card-title">最佳单笔</h2>
+        <div id="bestTrade" class="edge-box">—</div>
+      </div>
+      <div class="card">
+        <h2 class="card-title">最差单笔</h2>
+        <div id="worstTrade" class="edge-box">—</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">个股已实现盈亏</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>代码</th><th>名称</th><th class="num">已平仓</th><th class="num">累计盈亏</th><th class="num">盈亏率</th><th class="num">平均持有</th></tr>
+          </thead>
+          <tbody id="perStockBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-positions" class="view">
+    <div class="card">
+      <h2 class="card-title">当前持仓 <span id="positionCount" class="count-pill">0</span></h2>
+      <p class="hint">持仓按买入成本价展示，不计入总盈亏。「已持股时间」从最早一笔未平仓买入算起。</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>代码</th><th>名称</th><th class="num">当前成本价</th><th>建仓日</th>
+              <th class="num">已持股时间</th><th class="num">未平仓</th>
+              <th class="num">已平仓</th><th class="num">该股已实现盈亏</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="positionBody"></tbody>
+        </table>
+      </div>
+      <div id="positionEmpty" class="empty hidden">当前没有持仓股票</div>
+    </div>
+  </section>
+
+  <section id="view-trades" class="view">
+    <div class="card">
+      <h2 class="card-title" id="formTitle">录入买入</h2>
+      <form id="tradeForm" class="trade-form" autocomplete="off">
+        <div class="side-toggle" role="radiogroup" aria-label="交易类型">
+          <button type="button" class="side-btn buy active" data-side="buy">买入</button>
+          <button type="button" class="side-btn sell" data-side="sell">卖出</button>
+          <input type="hidden" id="sideInput" name="side" value="buy">
+        </div>
+
+        <div class="field">
+          <label for="codeInput">股票代码</label>
+          <input id="codeInput" name="code" list="codeList" placeholder="如 600519" required>
+          <datalist id="codeList"></datalist>
+        </div>
+
+        <div class="field">
+          <label for="nameInput">股票名称</label>
+          <input id="nameInput" name="name" placeholder="如 贵州茅台" required>
+        </div>
+
+        <div class="field">
+          <label for="dateInput">日期</label>
+          <input id="dateInput" name="trade_date" type="date" required>
+        </div>
+
+        <div class="field">
+          <label for="priceInput" id="priceLabel">买入价格</label>
+          <input id="priceInput" name="price" type="number" step="0.0001" min="0.0001" placeholder="0.0000" required>
+        </div>
+
+        <div class="field wide">
+          <label for="noteInput">备注</label>
+          <input id="noteInput" name="note" maxlength="200" placeholder="可选，如 加仓 / 止盈">
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn primary" id="submitBtn">保存买入</button>
+          <button type="button" class="btn ghost" id="cancelEditBtn" hidden>取消编辑</button>
+        </div>
+      </form>
+      <div id="formError" class="form-error hidden"></div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">全部交易 <span id="tradeCount" class="count-pill">0</span></h2>
+      <div class="filter-row">
+        <input id="tradeSearch" class="search" type="search" placeholder="搜索代码 / 名称 / 备注">
+        <select id="tradeSideFilter" class="search">
+          <option value="">全部类型</option>
+          <option value="buy">仅买入</option>
+          <option value="sell">仅卖出</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>日期</th><th>类型</th><th>代码</th><th>名称</th><th class="num">价格</th><th>备注</th><th>操作</th></tr>
+          </thead>
+          <tbody id="tradeBody"></tbody>
+        </table>
+      </div>
+      <div id="tradeEmpty" class="empty hidden">还没有交易记录，先在上方录入一笔</div>
+    </div>
+  </section>
+
+  <section id="view-closed" class="view">
+    <div class="card">
+      <h2 class="card-title">已平仓交易明细 <span id="closedCount" class="count-pill">0</span></h2>
+      <p class="hint">按 FIFO 先进先出匹配：最早的买入对应最早的卖出。</p>
+      <div class="filter-row">
+        <select id="closedCodeFilter" class="search">
+          <option value="">全部股票</option>
+        </select>
+        <select id="closedResultFilter" class="search">
+          <option value="">盈利 + 亏损</option>
+          <option value="win">仅盈利</option>
+          <option value="loss">仅亏损</option>
+          <option value="flat">仅持平</option>
+        </select>
+        <input id="closedSearch" class="search" type="search" placeholder="搜索名称 / 备注">
+      </div>
+      <div class="filter-summary" id="closedSummary"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>代码</th><th>名称</th>
+              <th>买入日</th><th class="num">买入价</th>
+              <th>卖出日</th><th class="num">卖出价</th>
+              <th class="num">盈亏</th><th class="num">盈亏率</th>
+              <th class="num">持有时间</th>
+            </tr>
+          </thead>
+          <tbody id="closedBody"></tbody>
+        </table>
+      </div>
+      <div id="closedEmpty" class="empty hidden">暂无已平仓交易</div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/app.js"></script>
+</body>
+</html>
