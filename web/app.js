@@ -114,8 +114,8 @@ function renderOverview() {
     ['盈利 / 亏损笔数', `${stats.win_count} / ${stats.loss_count}`],
     ['盈亏比', stats.profit_factor === null ? '—' : num(stats.profit_factor, 2)],
     ['平均每笔盈亏', signed(stats.avg_profit), tone(stats.avg_profit)],
-    ['平均每笔盈亏率', stats.closed_count ? signedPct(stats.avg_pct) : '—', tone(stats.avg_pct)],
-    ['平均持有时间', stats.closed_count ? `${stats.avg_hold_days} 天` : '—'],
+    ['平均每笔盈亏率', totals.closed_count ? signedPct(stats.avg_pct) : '—', tone(stats.avg_pct)],
+    ['平均持有时间', totals.closed_count ? stats.avg_hold_text : '—'],
     ['持仓股票数', String(totals.position_count)],
     ['总交易笔数', String(totals.trade_count)],
   ];
