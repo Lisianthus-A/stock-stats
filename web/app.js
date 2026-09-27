@@ -93,20 +93,17 @@ function renderOverview() {
   const { totals, stats, per_stock: perStock } = state.summary;
 
   $('heroPct').textContent = totals.closed_count ? signedPct(totals.overall_pct) : '—';
-  $('heroPct').className = 'hero-value ' + tone(totals.overall_pct);
+  $('heroPct').className = tone(totals.overall_pct);
 
   const cumulative = stats.cumulative_return;
   $('heroCumulative').textContent = totals.closed_count ? signedPct(cumulative) : '—';
-  $('heroCumulative').className = tone(cumulative);
+  $('heroCumulative').className = 'hero-value ' + tone(cumulative);
   $('heroCumulative').title = totals.closed_count
     ? `每笔平仓收益率连乘：${stats.cumulative_factor} 倍`
     : '暂无已平仓交易';
   $('heroProfit').textContent = totals.closed_count ? signed(totals.total_profit) : '—';
   $('heroProfit').className = tone(totals.total_profit);
   $('heroCost').textContent = totals.closed_count ? num(totals.total_cost) : '—';
-  $('heroSub').textContent = totals.closed_count
-    ? `${num(totals.total_cost)} 买入成本产生 ${signed(totals.total_profit)} 价差（不含持仓）`
-    : '暂无已平仓交易，录入一笔买入和一笔卖出即可看到统计';
 
   const metrics = [
     ['已平仓笔数', String(totals.closed_count)],

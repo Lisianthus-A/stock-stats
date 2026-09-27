@@ -129,7 +129,6 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 20px 60px; }
 
 .hero-label { display: block; font-size: 13px; color: var(--text-soft); }
 .hero-value { display: block; margin: 4px 0; font-size: 46px; line-height: 1.1; font-weight: 700; letter-spacing: -1px; }
-.hero-sub { font-size: 12.5px; color: var(--text-faint); }
 .hero-side { display: flex; gap: 34px; }
 .hero-block span { display: block; font-size: 12.5px; color: var(--text-soft); }
 .hero-block strong { font-size: 22px; font-weight: 600; }
