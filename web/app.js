@@ -8,6 +8,7 @@ const state = {
   expanded: new Set(),
   importPayload: null,
   importCount: 0,
+  stockOptionsKey: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -30,7 +31,13 @@ const price = (value) => num(value, Number.isInteger(+value) ? 2 : 4);
 
 const tone = (value) => (value > 0 ? 'up' : value < 0 ? 'down' : 'flat');
 const sideText = (side) => (side === 'buy' ? '买入' : '卖出');
-const todayStr = () => new Date().toISOString().slice(0, 10);
+
+/* 用本地时区拼日期：toISOString() 是 UTC，东八区凌晨会算成前一天 */
+const todayStr = () => {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -72,6 +79,7 @@ async function load() {
 /* ---------- render ---------- */
 
 function render() {
+  fillStockOptions();
   renderHeader();
   renderOverview();
   renderPositions();
@@ -237,11 +245,26 @@ function renderTrades() {
         </div>
       </td>
     </tr>`).join('');
+}
 
-  const codes = Object.keys(state.summary.stock_names).sort();
+/** 录入框的代码联想与「已平仓」筛选项都来自同一份 stock_names，股票有变化时才重建 */
+function fillStockOptions() {
+  const names = state.summary.stock_names;
+  const codes = Object.keys(names).sort();
+  const key = codes.join(' ');
+  if (key === state.stockOptionsKey) return;
+  state.stockOptionsKey = key;
+
   $('codeList').innerHTML = codes
-    .map((c) => `<option value="${esc(c)}">${esc(state.summary.stock_names[c])}</option>`)
+    .map((code) => `<option value="${esc(code)}">${esc(names[code])}</option>`)
     .join('');
+
+  const select = $('closedCodeFilter');
+  const current = select.value;
+  select.innerHTML = '<option value="">全部股票</option>' +
+    codes.map((code) =>
+      `<option value="${esc(code)}">${esc(code)} ${esc(names[code])}</option>`).join('');
+  select.value = codes.includes(current) ? current : '';
 }
 
 function renderClosed() {
@@ -249,16 +272,6 @@ function renderClosed() {
   const codeFilter = $('closedCodeFilter').value;
   const resultFilter = $('closedResultFilter').value;
   const keyword = $('closedSearch').value.trim().toLowerCase();
-
-  const select = $('closedCodeFilter');
-  const wanted = ['', ...Object.keys(state.summary.stock_names).sort()];
-  if (select.options.length !== wanted.length) {
-    select.innerHTML =
-      '<option value="">全部股票</option>' +
-      wanted.slice(1).map((c) =>
-        `<option value="${esc(c)}">${esc(c)} ${esc(state.summary.stock_names[c])}</option>`).join('');
-    select.value = codeFilter;
-  }
 
   const rows = pairs.filter((p) => {
     if (codeFilter && p.code !== codeFilter) return false;
@@ -467,8 +480,10 @@ async function runImport(mode) {
     });
     closeImportPanel();
     resetForm();
-    toast(`已导入 ${result.imported} 条记录（${mode === 'replace' ? '覆盖' : '追加'}），现有 ${result.total} 条`);
-    (result.warnings || []).forEach((w) => toast(w, 'warn'));
+    const label = mode === 'replace' ? '覆盖' : '追加';
+    const warnings = result.warnings || [];
+    const messages = [`已导入 ${result.imported} 条记录（${label}），现有 ${result.total} 条`, ...warnings];
+    toast(messages.join('；'), warnings.length ? 'warn' : '');
     await load();
   } catch (error) {
     const details = error.details || [];
@@ -548,9 +563,8 @@ function bindEvents() {
         ? await api(`/api/trades/${editing}`, { method: 'PUT', body: JSON.stringify(payload) })
         : await api('/api/trades', { method: 'POST', body: JSON.stringify(payload) });
       resetForm();
-      $('nameInput').dataset.touched = '';
-      toast(editing ? '已保存修改' : `已录入${sideText(payload.side)}记录`, result.warning ? 'warn' : '');
-      if (result.warning) toast(result.warning, 'warn');
+      const saved = editing ? '已保存修改' : `已录入${sideText(payload.side)}记录`;
+      toast(result.warning ? `${saved}（${result.warning}）` : saved, result.warning ? 'warn' : '');
       await load();
     } catch (error) {
       showFormError(error.message);

@@ -83,8 +83,8 @@
    例如 10.00 买入、12.00 卖出，该笔盈亏数为 `+2.00`，盈亏率 `+20%`。
 2. **持仓中的股票不计入总盈亏**。持仓按买入成本价展示，只统计已平仓（已实现）盈亏；
    累计收益同样只连乘已平仓交易。
-3. 若某笔卖出早于该股票最早的买入记录（通常是日期录错），系统会给出警告，
-   该笔卖出无法配对、不计入统计，但数据仍会保留。
+3. 若某笔卖出无法配对（卖出多于买入，或卖出日期早于该股票最早的买入日期，通常是日期录错），
+   系统会给出警告，该笔卖出不计入统计，但数据仍会保留。
 
 ## 导入 / 导出
 
@@ -168,7 +168,8 @@ stock/stats/
 ├── start.bat          # 双击启动
 ├── server.py          # HTTP 服务 + REST API
 ├── core.py            # FIFO 配对与统计逻辑（纯函数）
-├── test_core.py       # 核心逻辑单元测试
+├── test_core.py       # core.py 单元测试
+├── test_server.py     # server.py 单元测试
 ├── stats.db           # 数据文件（自动创建）
 └── web/               # 前端页面（原生 HTML/CSS/JS，无需构建）
 ```
@@ -176,14 +177,14 @@ stock/stats/
 ## 运行测试
 
 ```powershell
-python -m unittest test_core -v
+python -m unittest test_core test_server -v
 ```
 
 ## API
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/trades` | 全部交易记录 |
+| GET | `/api/trades` | 全部交易记录（`{"trades": [...]}`，按时间倒序） |
 | POST | `/api/trades` | 新增交易 |
 | PUT | `/api/trades/{id}` | 修改交易 |
 | DELETE | `/api/trades/{id}` | 删除交易 |
@@ -192,7 +193,7 @@ python -m unittest test_core -v
 | GET | `/api/import-template` | 导入模板（2 条示例数据） |
 | POST | `/api/import` | 导入交易，请求体 `{"mode": "append"\|"replace", "payload": <导出文件内容>}` |
 
-`mode` 省略时默认为 `append`；`payload` 也可以省略，此时整个请求体就是导出文件内容，便于用命令行导入：
+`mode` 省略（或为空）时默认为 `append`；`payload` 也可以省略，此时整个请求体就是导出文件内容，便于用命令行导入：
 
 ```powershell
 # 追加导入（PowerShell 需注意 UTF-8 编码）

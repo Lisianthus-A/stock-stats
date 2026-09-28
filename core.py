@@ -9,7 +9,6 @@ from typing import Any, Iterable, Mapping, Sequence
 
 BUY = "buy"
 SELL = "sell"
-SIDES = (BUY, SELL)
 
 DATE_FMT = "%Y-%m-%d"
 MONEY_DP = 4
@@ -272,11 +271,20 @@ class UnmatchedSell:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class Pairing:
+    """一次 FIFO 配对的结果。列表均已按交易先后排好序，可直接使用。"""
+
+    trades_by_code: dict[str, list[Trade]]
     closed: list[ClosedPair]
+    closed_by_code: dict[str, list[ClosedPair]]
     open_lots: dict[str, list[OpenLot]]
     unmatched_sells: list[UnmatchedSell]
+
+    @property
+    def stock_names(self) -> dict[str, str]:
+        """每只股票的最新名称（按交易时间取最后一次出现的名字）。"""
+        return {code: items[-1].name for code, items in self.trades_by_code.items()}
 
 
 def trade_from_mapping(row: Mapping[str, Any]) -> Trade:
@@ -314,9 +322,10 @@ def trade_to_dict(trade: Trade) -> dict:
 def collect_warnings(pairing: Pairing) -> list[str]:
     if not pairing.unmatched_sells:
         return []
+    codes = "、".join(sorted({item.code for item in pairing.unmatched_sells}))
     return [
-        f"有 {len(pairing.unmatched_sells)} 笔卖出记录早于该股票最早的买入记录，"
-        "无法配对，未计入盈亏统计，请检查日期或补录买入记录。"
+        f"有 {len(pairing.unmatched_sells)} 笔卖出（{codes}）无法配对，未计入盈亏统计："
+        "卖出多于买入，或卖出日期早于该股票最早的买入记录，请检查日期或补录买入记录。"
     ]
 
 
@@ -343,12 +352,9 @@ def build_export(trades: Iterable[Trade], exported_at: str | None = None) -> dic
     }
 
 
-def _dump_json(payload: Mapping[str, Any]) -> str:
-    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-
-
 def export_text(trades: Iterable[Trade], exported_at: str | None = None) -> str:
-    return _dump_json(build_export(trades, exported_at))
+    payload = build_export(trades, exported_at)
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 
 TEMPLATE_TRADES: tuple[Trade, ...] = (
@@ -445,13 +451,14 @@ def pair_trades(trades: Iterable[Trade]) -> Pairing:
     grouped: dict[str, list[Trade]] = {}
     for trade in trades:
         grouped.setdefault(trade.code, []).append(trade)
+    for items in grouped.values():
+        items.sort(key=lambda t: t.sort_key)
 
     closed: list[ClosedPair] = []
     open_lots: dict[str, list[OpenLot]] = {}
     unmatched: list[UnmatchedSell] = []
 
-    for code in sorted(grouped):
-        items = sorted(grouped[code], key=lambda t: t.sort_key)
+    for code, items in sorted(grouped.items()):
         queue: deque[OpenLot] = deque()
 
         for trade in items:
@@ -494,42 +501,37 @@ def pair_trades(trades: Iterable[Trade]) -> Pairing:
                 )
 
         if queue:
-            open_lots[code] = sorted(queue, key=lambda lot: (lot.buy_date, lot.seq))
+            open_lots[code] = list(queue)
 
     closed.sort(key=lambda pair: (pair.sell_date, pair.sell_id))
     unmatched.sort(key=lambda item: (item.sell_date, item.sell_id))
-    return Pairing(closed=closed, open_lots=open_lots, unmatched_sells=unmatched)
-
-
-def build_positions(
-    trades: Sequence[Trade],
-    pairing: Pairing,
-    as_of: date,
-) -> list[dict]:
-    by_code: dict[str, list[Trade]] = {}
-    for trade in trades:
-        by_code.setdefault(trade.code, []).append(trade)
-
     closed_by_code: dict[str, list[ClosedPair]] = {}
-    for pair in pairing.closed:
+    for pair in closed:
         closed_by_code.setdefault(pair.code, []).append(pair)
+    return Pairing(
+        trades_by_code=grouped,
+        closed=closed,
+        closed_by_code=closed_by_code,
+        open_lots=open_lots,
+        unmatched_sells=unmatched,
+    )
 
+
+def build_positions(pairing: Pairing, as_of: date) -> list[dict]:
     positions: list[dict] = []
     for code, lots in pairing.open_lots.items():
-        stock_trades = sorted(by_code[code], key=lambda t: t.sort_key)
-        pairs = closed_by_code.get(code, [])
+        stock_trades = pairing.trades_by_code[code]
+        pairs = pairing.closed_by_code.get(code, [])
         realized_profit = round(sum(p.profit for p in pairs), MONEY_DP)
         realized_cost = round(sum(p.buy_price for p in pairs), MONEY_DP)
         first_buy_date = min(lot.buy_date for lot in lots)
         holding_days = max(0, (as_of - first_buy_date).days)
-        lot_dicts = [
-            lot.to_dict(as_of) for lot in sorted(lots, key=lambda l: (l.buy_date, l.seq))
-        ]
+        lot_dicts = [lot.to_dict(as_of) for lot in lots]
         last_lot = lot_dicts[-1]
         positions.append(
             {
                 "code": code,
-                "name": stock_trades[-1].name if stock_trades else code,
+                "name": stock_trades[-1].name,
                 "open_count": len(lot_dicts),
                 "cost_price": last_lot["buy_price"],
                 "avg_cost": _mean([lot["buy_price"] for lot in lot_dicts]),
@@ -558,22 +560,22 @@ def cumulative_factor(closed: Sequence[ClosedPair]) -> float:
 def build_stats(closed: Sequence[ClosedPair]) -> dict:
     wins = [p for p in closed if p.profit > 0]
     losses = [p for p in closed if p.profit < 0]
-    flats = [p for p in closed if p.profit == 0]
     win_sum = round(sum(p.profit for p in wins), MONEY_DP)
     loss_sum = round(sum(p.profit for p in losses), MONEY_DP)
     hold_days = [p.hold_days for p in closed]
+    avg_hold_days = int(round(sum(hold_days) / len(hold_days))) if hold_days else 0
     profit_factor = round(win_sum / abs(loss_sum), 2) if loss_sum else None
     factor = cumulative_factor(closed) if closed else 0.0
 
-    def best_or_worst(pool: Sequence[ClosedPair], key) -> dict | None:
+    def extreme(pool: Sequence[ClosedPair], pick) -> dict | None:
         if not pool:
             return None
-        return key(pool, key=lambda p: p.profit).to_dict()
+        return pick(pool, key=lambda p: p.profit).to_dict()
 
     return {
         "win_count": len(wins),
         "loss_count": len(losses),
-        "flat_count": len(flats),
+        "flat_count": len(closed) - len(wins) - len(losses),
         "win_rate": round(len(wins) / len(closed) * 100, PCT_DP) if closed else 0.0,
         "profit_factor": profit_factor,
         "avg_win": _mean([p.profit for p in wins]),
@@ -582,14 +584,14 @@ def build_stats(closed: Sequence[ClosedPair]) -> dict:
         "avg_pct": _mean([p.pct for p in closed]),
         "cumulative_factor": round(factor, 6),
         "cumulative_return": round(factor * 100.0, PCT_DP),
-        "avg_hold_days": int(round(_mean([float(d) for d in hold_days]))) if hold_days else 0,
-        "avg_hold_text": human_days(int(round(_mean([float(d) for d in hold_days])))) if hold_days else "0 天",
-        "max_hold_days": max(hold_days) if hold_days else 0,
-        "min_hold_days": min(hold_days) if hold_days else 0,
+        "avg_hold_days": avg_hold_days,
+        "avg_hold_text": human_days(avg_hold_days),
+        "max_hold_days": max(hold_days, default=0),
+        "min_hold_days": min(hold_days, default=0),
         "win_sum": win_sum,
         "loss_sum": loss_sum,
-        "best": best_or_worst(closed, max),
-        "worst": best_or_worst(closed, min),
+        "best": extreme(closed, max),
+        "worst": extreme(closed, min),
     }
 
 
@@ -597,29 +599,20 @@ def build_summary(trades: Sequence[Trade], as_of: date | None = None) -> dict:
     as_of = as_of or date.today()
     pairing = pair_trades(trades)
     closed = pairing.closed
+    stock_names = pairing.stock_names
 
     total_profit = round(sum(p.profit for p in closed), MONEY_DP)
     total_cost = round(sum(p.buy_price for p in closed), MONEY_DP)
     open_lot_count = sum(len(lots) for lots in pairing.open_lots.values())
-    positions = build_positions(trades, pairing, as_of)
-
-    warnings: list[str] = collect_warnings(pairing)
-
-    stock_names: dict[str, str] = {}
-    for trade in sorted(trades, key=lambda t: t.sort_key):
-        stock_names[trade.code] = trade.name
 
     per_stock: list[dict] = []
-    for code, name in stock_names.items():
-        pairs = [p for p in closed if p.code == code]
-        if not pairs:
-            continue
+    for code, pairs in pairing.closed_by_code.items():
         profit = round(sum(p.profit for p in pairs), MONEY_DP)
         cost = round(sum(p.buy_price for p in pairs), MONEY_DP)
         per_stock.append(
             {
                 "code": code,
-                "name": name,
+                "name": stock_names.get(code, code),
                 "closed_count": len(pairs),
                 "realized_profit": profit,
                 "realized_pct": _pct(profit, cost),
@@ -637,7 +630,7 @@ def build_summary(trades: Sequence[Trade], as_of: date | None = None) -> dict:
             "sell_count": sum(1 for t in trades if t.side == SELL),
             "closed_count": len(closed),
             "open_lot_count": open_lot_count,
-            "position_count": len(positions),
+            "position_count": len(pairing.open_lots),
             "stock_count": len(stock_names),
             "unmatched_sell_count": len(pairing.unmatched_sells),
             "total_profit": total_profit,
@@ -645,10 +638,10 @@ def build_summary(trades: Sequence[Trade], as_of: date | None = None) -> dict:
             "overall_pct": _pct(total_profit, total_cost),
         },
         "stats": build_stats(closed),
-        "positions": positions,
+        "positions": build_positions(pairing, as_of),
         "closed_pairs": [p.to_dict() for p in closed],
         "unmatched_sells": [u.to_dict() for u in pairing.unmatched_sells],
         "per_stock": per_stock,
         "stock_names": stock_names,
-        "warnings": warnings,
+        "warnings": collect_warnings(pairing),
     }

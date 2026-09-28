@@ -6,11 +6,12 @@ import json
 import sqlite3
 import sys
 import threading
+import traceback
 import webbrowser
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 from urllib.parse import parse_qs, quote, urlparse
 
 import core
@@ -143,7 +144,7 @@ def import_trades(
     conn: sqlite3.Connection,
     records: Sequence[dict],
     mode: str,
-) -> int:
+) -> None:
     """写入导入记录。mode=replace 时先清空现有数据。"""
     if mode == "replace":
         conn.execute("DELETE FROM trades")
@@ -168,7 +169,19 @@ def import_trades(
             for offset, item in enumerate(records)
         ],
     )
-    return len(records)
+
+
+def split_import_body(body: Any) -> tuple[str, Any]:
+    """拆出导入模式与数据体。
+
+    两种写法都支持：
+      {"mode": "replace", "payload": <导出文件内容>}
+      <导出文件内容>            —— 整个请求体就是数据，模式默认 append
+    """
+    if isinstance(body, dict) and "payload" in body:
+        mode = str(body.get("mode") or "").strip()
+        return mode or "append", body["payload"]
+    return "append", body
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -218,8 +231,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, 400)
         except Exception as exc:  # noqa: BLE001
             if self.verbose:
-                import traceback
-
                 traceback.print_exc()
             self._send_json({"error": f"服务器内部错误：{exc}"}, 500)
 
@@ -241,10 +252,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/trades":
             with db() as conn:
                 trades = fetch_trades(conn)
-            self._send_json({
-                "trades": [core.trade_to_dict(t) for t in trades],
-                "stock_names": {t.code: t.name for t in trades},
-            })
+            self._send_json({"trades": [core.trade_to_dict(t) for t in trades]})
         elif path == "/api/summary":
             raw_as_of = self._query_param("as_of")
             as_of = core.parse_date(raw_as_of) if raw_as_of else date.today()
@@ -291,11 +299,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"deleted_id": trade_id})
 
     def _handle_import(self) -> None:
-        body = self._read_json(allow_list=True)
-        if isinstance(body, dict) and "payload" in body and "mode" in body:
-            mode, data = str(body.get("mode") or "append").strip(), body.get("payload")
-        else:
-            mode, data = "append", body
+        mode, data = split_import_body(self._read_json(allow_list=True))
         if mode not in IMPORT_MODES:
             raise core.ValidationError("导入模式必须是 append（追加）或 replace（覆盖）")
 
@@ -311,12 +315,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         with db() as conn:
-            imported = import_trades(conn, result.records, mode)
+            import_trades(conn, result.records, mode)
             trades = fetch_trades(conn)
         self._send_json(
             {
                 "mode": mode,
-                "imported": imported,
+                "imported": len(result.records),
                 "total": len(trades),
                 "errors": [],
                 "warnings": core.collect_warnings(core.pair_trades(trades)),
@@ -415,14 +419,15 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 56)
 
     if not args.no_browser:
-        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+        opener = threading.Timer(0.5, webbrowser.open, (url,))
+        opener.daemon = True
+        opener.start()
 
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n服务已停止。")
     finally:
-        httpd.shutdown()
         httpd.server_close()
     return 0
 

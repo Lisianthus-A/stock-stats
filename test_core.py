@@ -272,6 +272,15 @@ class SummaryMathTests(unittest.TestCase):
         self.assertIsNone(summary["stats"]["profit_factor"])
         self.assertEqual(summary["totals"]["overall_pct"], 10.0)
 
+    def test_stock_name_follows_the_latest_trade(self):
+        trades = [
+            make_trade(1, "A", BUY, "2024-01-01", 10.0, name="旧名"),
+            make_trade(2, "A", SELL, "2024-02-01", 12.0, name="新名"),
+        ]
+        summary = build_summary(trades, self.as_of)
+        self.assertEqual(summary["stock_names"], {"A": "新名"})
+        self.assertEqual(summary["closed_pairs"][0]["name"], "新名")
+
     def test_holding_days_per_lot_for_added_position(self):
         trades = [
             make_trade(1, "A", BUY, "2024-01-01", 10.0),
@@ -532,6 +541,28 @@ class WarningTests(unittest.TestCase):
         warnings = core.collect_warnings(pairing)
         self.assertEqual(len(warnings), 1)
         self.assertIn("2 笔卖出", warnings[0])
+        self.assertIn("A", warnings[0])
+
+    def test_warning_names_every_affected_stock(self):
+        pairing = core.pair_trades([
+            make_trade(1, "B", SELL, "2024-01-01", 10.0),
+            make_trade(2, "A", SELL, "2024-01-01", 10.0),
+        ])
+        warning = core.collect_warnings(pairing)[0]
+        self.assertIn("2 笔卖出", warning)
+        self.assertIn("A、B", warning)
+
+    def test_sell_without_any_buy_is_also_reported(self):
+        # 卖出数多于买入数：第一次配对后剩下的卖出同样无法配对
+        pairing = core.pair_trades([
+            make_trade(1, "A", BUY, "2024-01-01", 10.0),
+            make_trade(2, "A", SELL, "2024-02-01", 11.0),
+            make_trade(3, "A", SELL, "2024-03-01", 12.0),
+        ])
+        warnings = core.collect_warnings(pairing)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("1 笔卖出", warnings[0])
+        self.assertIn("卖出多于买入", warnings[0])
 
 
 if __name__ == "__main__":
