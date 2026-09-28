@@ -6,6 +6,8 @@ const state = {
   side: 'buy',
   editingId: null,
   expanded: new Set(),
+  importPayload: null,
+  importCount: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -37,7 +39,9 @@ async function api(path, options = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.error || `请求失败（${response.status}）`);
+    const error = new Error(payload.error || `请求失败（${response.status}）`);
+    error.details = payload.errors || [];
+    throw error;
   }
   return payload;
 }
@@ -368,6 +372,114 @@ function localDateWarning(code, side, dateValue) {
   return null;
 }
 
+/* ---------- 导入 / 导出 ---------- */
+
+const importRows = (payload) => {
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === 'object') {
+    return [payload.trades, payload.records, payload.data].find(Array.isArray) || [];
+  }
+  return [];
+};
+
+const pickField = (row, keys) => {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return '';
+};
+
+function closeImportPanel() {
+  state.importPayload = null;
+  state.importCount = 0;
+  $('importFile').value = '';
+  showImportErrors([]);
+  $('ioPanel').classList.add('hidden');
+}
+
+function showImportErrors(messages) {
+  const list = $('ioErrors');
+  list.innerHTML = messages.map((m) => `<li>${esc(m)}</li>`).join('');
+  list.classList.toggle('hidden', !messages.length);
+}
+
+function showImportPreview(filename, payload) {
+  const rows = importRows(payload);
+  state.importPayload = payload;
+  state.importCount = rows.length;
+
+  if (!rows.length) {
+    $('ioSummary').innerHTML =
+      `文件 <b>${esc(filename)}</b> 里没找到交易记录数组（需要形如 <code>{"trades": [...]}</code>）。`;
+    $('ioPreviewBody').innerHTML = '';
+    $('ioAppendBtn').disabled = true;
+    $('ioReplaceBtn').disabled = true;
+    showImportErrors([]);
+    $('ioPanel').classList.remove('hidden');
+    return;
+  }
+
+  $('ioAppendBtn').disabled = false;
+  $('ioReplaceBtn').disabled = false;
+
+  const dates = rows
+    .map((row) => pickField(row, ['trade_date', 'date', '日期']))
+    .filter(Boolean)
+    .map(String)
+    .sort();
+  const span = dates.length ? `${dates[0]} ~ ${dates[dates.length - 1]}` : '日期缺失';
+  $('ioSummary').innerHTML =
+    `文件 <b>${esc(filename)}</b> 解析到 <b>${rows.length}</b> 条记录 ｜ 现有 ${state.trades.length} 条 ｜ 日期 ${esc(span)}`;
+
+  const preview = rows.slice(0, 5).map((row) => `
+    <tr>
+      <td class="mono">${esc(pickField(row, ['trade_date', 'date', '日期']))}</td>
+      <td>${esc(pickField(row, ['side', 'type', '类型']))}</td>
+      <td class="mono">${esc(pickField(row, ['code', '代码']))}</td>
+      <td>${esc(pickField(row, ['name', '名称']))}</td>
+      <td class="num">${esc(pickField(row, ['price', '价格']))}</td>
+      <td class="note-cell">${esc(pickField(row, ['note', '备注']) || '—')}</td>
+    </tr>`).join('');
+
+  $('ioPreviewBody').innerHTML = rows.length > 5
+    ? preview + `<tr><td colspan="6" class="empty">… 其余 ${rows.length - 5} 条</td></tr>`
+    : preview;
+
+  showImportErrors([]);
+  $('ioPanel').classList.remove('hidden');
+}
+
+async function runImport(mode) {
+  if (!state.importPayload) return;
+  const count = state.importCount;
+  if (mode === 'replace') {
+    const ok = confirm(
+      `覆盖导入会先删除数据库中现有的全部 ${state.trades.length} 条交易记录，` +
+      `再写入文件里的 ${count} 条。此操作不可撤销，确定继续吗？`
+    );
+    if (!ok) return;
+  }
+  try {
+    const result = await api('/api/import', {
+      method: 'POST',
+      body: JSON.stringify({ mode, payload: state.importPayload }),
+    });
+    closeImportPanel();
+    resetForm();
+    toast(`已导入 ${result.imported} 条记录（${mode === 'replace' ? '覆盖' : '追加'}），现有 ${result.total} 条`);
+    (result.warnings || []).forEach((w) => toast(w, 'warn'));
+    await load();
+  } catch (error) {
+    const details = error.details || [];
+    if (details.length) {
+      showImportErrors(details);
+      $('ioPanel').classList.remove('hidden');
+    }
+    toast('导入失败：' + error.message, 'error');
+  }
+}
+
 /* ---------- events ---------- */
 
 function bindEvents() {
@@ -386,6 +498,27 @@ function bindEvents() {
 
   $('refreshBtn').addEventListener('click', load);
   $('cancelEditBtn').addEventListener('click', resetForm);
+
+  $('importBtn').addEventListener('click', () => $('importFile').click());
+  $('importFile').addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      showImportPreview(file.name, JSON.parse(await file.text()));
+    } catch (error) {
+      state.importPayload = null;
+      state.importCount = 0;
+      showImportErrors(['文件不是合法的 JSON：' + error.message]);
+      $('ioSummary').innerHTML = `文件 <b>${esc(file.name)}</b> 解析失败。`;
+      $('ioPreviewBody').innerHTML = '';
+      $('ioAppendBtn').disabled = true;
+      $('ioReplaceBtn').disabled = true;
+      $('ioPanel').classList.remove('hidden');
+    }
+  });
+  $('ioAppendBtn').addEventListener('click', () => runImport('append'));
+  $('ioReplaceBtn').addEventListener('click', () => runImport('replace'));
+  $('ioCancelBtn').addEventListener('click', closeImportPanel);
 
   $('codeInput').addEventListener('input', () => {
     const known = state.summary?.stock_names?.[$('codeInput').value.trim()];

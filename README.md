@@ -19,7 +19,7 @@
 | --- | --- |
 | **总览** | 总体盈利百分比、**累计收益（复利）**、盈亏数、总买入成本、胜率、盈亏比、平均持有时间、最佳/最差单笔、个股盈亏排行 |
 | **当前持仓** | 每只持股的成本价、建仓日、**已持股时间**、未平仓笔数、该股已实现盈亏；可展开查看每笔买入的独立持股天数 |
-| **交易流水** | 录入 / 编辑 / 删除交易，支持代码联想与搜索筛选 |
+| **交易流水** | 录入 / 编辑 / 删除交易，支持代码联想与搜索筛选；**JSON 导入 / 导出**，可下载模板手工改 |
 | **已平仓明细** | 每一笔买入与卖出的配对结果、盈亏、盈亏率、持有天数，可按股票与盈亏方向筛选并汇总 |
 
 ## 录入字段
@@ -86,10 +86,70 @@
 3. 若某笔卖出早于该股票最早的买入记录（通常是日期录错），系统会给出警告，
    该笔卖出无法配对、不计入统计，但数据仍会保留。
 
+## 导入 / 导出
+
+在「交易流水」页顶部：
+
+- **导出 JSON** — 把全部交易按日期先后导出为 `trades-YYYYMMDD.json`
+- **下载示例模板** — 拿到一份只有 2 条示例数据的空模板，照着格式手写即可
+- **导入 JSON** — 选择文件后先预览，再选择导入方式
+
+导出的是**格式化过的 JSON 文本**，可以直接用记事本、VS Code 打开修改（改价格、改备注、补漏录的记录），改完再导入回来。
+
+### 两种导入方式
+
+| 方式 | 行为 | 适用 |
+| --- | --- | --- |
+| **追加导入** | 把文件里的记录加到现有数据后面 | 补录零散交易、合并另一台电脑的数据 |
+| **覆盖导入** | 先清空全部现有记录，只保留文件内容 | 用改好的 JSON 完全替换当前数据 |
+
+- 导入是**全有或全无**：只要有一条记录不合法，整份文件都不会写入，错误会逐条列出（第几条、错在哪），改完再导一次即可。
+- 覆盖导入前会二次确认，且不允许导入空文件（避免手滑清空数据）。
+- 文件里同一天的多笔交易，按**在文件中出现的先后顺序**配对，与页面录入的行为一致。
+
+### 文件格式
+
+```json
+{
+  "format": "stock-stats/trades",
+  "version": 1,
+  "exported_at": "2024-06-30 12:00:00",
+  "count": 2,
+  "note": "side 可写 买入/卖出 或 buy/sell；日期 YYYY-MM-DD；同一天的多笔按本文件中的先后顺序配对",
+  "trades": [
+    {
+      "trade_date": "2024-01-02",
+      "code": "600519",
+      "name": "贵州茅台",
+      "side": "买入",
+      "price": 1680.0,
+      "note": "建仓"
+    },
+    {
+      "trade_date": "2024-03-08",
+      "code": "600519",
+      "name": "贵州茅台",
+      "side": "卖出",
+      "price": 1900.0,
+      "note": "止盈"
+    }
+  ]
+}
+```
+
+只需关心 `trades` 数组，其余字段只是说明信息，删掉也不影响导入。导入时对写法比较宽容：
+
+- 顶层可以是 `{"trades": [...]}`，也可以直接是一个数组 `[{...}]`，甚至单条记录 `{...}`
+- 字段名支持 `trade_date` / `date` / `日期`，`side` / `type` / `类型`，`code` / `代码` 等
+- `side` 可写 `买入` / `卖出` / `buy` / `sell`
+- `price` 可以是数字或字符串（`1680` 和 `"1680"` 都行）
+- `name` 省略时自动用 `code` 顶上
+- 校验规则与页面录入完全一致：价格必须 > 0、日期必须存在、代码与名称不能为空、备注 ≤ 200 字
+
 ## 数据存储
 
 - 数据文件：与本程序同目录的 `stats.db`（SQLite）
-- 备份：直接复制 `stats.db` 即可（建议先关闭服务再复制）
+- 备份：直接复制 `stats.db` 即可（建议先关闭服务再复制），或在页面上导出 JSON
 - `stats.db` 已加入 `.gitignore`，不会被误提交
 
 ## 命令行参数
@@ -128,6 +188,25 @@ python -m unittest test_core -v
 | PUT | `/api/trades/{id}` | 修改交易 |
 | DELETE | `/api/trades/{id}` | 删除交易 |
 | GET | `/api/summary` | 持仓 + 配对 + 统计（可用 `?as_of=YYYY-MM-DD` 指定基准日） |
+| GET | `/api/export` | 全部交易导出为 JSON 文件（浏览器直接下载） |
+| GET | `/api/import-template` | 导入模板（2 条示例数据） |
+| POST | `/api/import` | 导入交易，请求体 `{"mode": "append"\|"replace", "payload": <导出文件内容>}` |
+
+`mode` 省略时默认为 `append`；`payload` 也可以省略，此时整个请求体就是导出文件内容，便于用命令行导入：
+
+```powershell
+# 追加导入（PowerShell 需注意 UTF-8 编码）
+Invoke-RestMethod -Uri http://127.0.0.1:8765/api/import -Method Post `
+  -ContentType "application/json; charset=utf-8" -InFile .\trades-20240630.json
+
+# 覆盖导入
+$body = @{ mode = "replace"; payload = (Get-Content -Raw -Encoding UTF8 .\trades-20240630.json | ConvertFrom-Json) }
+Invoke-RestMethod -Uri http://127.0.0.1:8765/api/import -Method Post `
+  -ContentType "application/json; charset=utf-8" -Body ($body | ConvertTo-Json -Depth 5)
+```
+
+导入成功返回 `{"mode", "imported", "total", "errors", "warnings"}`；有记录不合法时返回 400，
+`error` 说明整体原因，`errors` 逐条列出问题。
 
 `/api/summary` 的 `stats` 中包含 `cumulative_return`（累计收益百分比）与
 `cumulative_factor`（本金倍数原始值，例如 `2.0`）。

@@ -99,6 +99,35 @@
 
   <section id="view-trades" class="view">
     <div class="card">
+      <h2 class="card-title">导入 / 导出</h2>
+      <p class="hint">导出的是 JSON 文本文件，可用记事本、VS Code 直接打开修改，改完再导入回来。导入可选择「追加」或「覆盖」。</p>
+      <div class="io-row">
+        <a class="btn primary" href="/api/export" download>导出 JSON</a>
+        <a class="btn ghost" href="/api/import-template" download>下载示例模板</a>
+        <button class="btn ghost" id="importBtn" type="button">导入 JSON…</button>
+        <input id="importFile" type="file" accept=".json,application/json" hidden>
+      </div>
+      <div id="ioPanel" class="io-panel hidden">
+        <p id="ioSummary" class="io-summary"></p>
+        <ul id="ioErrors" class="io-errors hidden"></ul>
+        <div class="table-wrap">
+          <table class="io-table">
+            <thead>
+              <tr><th>日期</th><th>类型</th><th>代码</th><th>名称</th><th class="num">价格</th><th>备注</th></tr>
+            </thead>
+            <tbody id="ioPreviewBody"></tbody>
+          </table>
+        </div>
+        <div class="form-actions io-actions">
+          <button class="btn primary" id="ioAppendBtn" type="button">追加导入</button>
+          <button class="btn ghost" id="ioReplaceBtn" type="button">覆盖导入</button>
+          <button class="btn ghost" id="ioCancelBtn" type="button">取消</button>
+        </div>
+        <p class="hint io-hint">「追加」把文件里的记录加到现有数据后面；「覆盖」会先清空全部现有记录，只保留文件内容。</p>
+      </div>
+    </div>
+
+    <div class="card">
       <h2 class="card-title" id="formTitle">录入买入</h2>
       <form id="tradeForm" class="trade-form" autocomplete="off">
         <div class="side-toggle" role="radiogroup" aria-label="交易类型">

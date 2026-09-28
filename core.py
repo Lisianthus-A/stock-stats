@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -18,11 +19,31 @@ MAX_NAME_LEN = 40
 MAX_NOTE_LEN = 200
 MAX_PRICE = 1_000_000_000.0
 
+EXPORT_FORMAT = "stock-stats/trades"
+EXPORT_VERSION = 1
+EXPORT_NOTE = (
+    "side 可写 买入/卖出 或 buy/sell；日期 YYYY-MM-DD；"
+    "同一天的多笔按本文件中的先后顺序配对"
+)
+MAX_IMPORT_RECORDS = 20_000
+
 _SIDE_ALIASES = {
     "buy": BUY, "b": BUY, "1": BUY,
     "买": BUY, "买入": BUY, "建仓": BUY,
     "sell": SELL, "s": SELL, "0": SELL, "2": SELL,
     "卖": SELL, "卖出": SELL, "清仓": SELL,
+}
+
+_SIDE_LABELS = {BUY: "买入", SELL: "卖出"}
+
+# 导入时允许的字段别名，方便手工改 JSON（date / 日期 等常见写法都能认）
+_FIELD_ALIASES = {
+    "code": ("code", "symbol", "ticker", "代码", "股票代码"),
+    "name": ("name", "名称", "股票名称"),
+    "side": ("side", "type", "direction", "类型", "方向", "交易类型"),
+    "trade_date": ("trade_date", "date", "日期", "交易日期"),
+    "price": ("price", "价格", "成交价"),
+    "note": ("note", "remark", "备注"),
 }
 
 _DATE_RE = re.compile(r"(\d{4})\D{0,2}(\d{1,2})\D{0,2}(\d{1,2})")
@@ -290,6 +311,136 @@ def trade_to_dict(trade: Trade) -> dict:
     }
 
 
+def collect_warnings(pairing: Pairing) -> list[str]:
+    if not pairing.unmatched_sells:
+        return []
+    return [
+        f"有 {len(pairing.unmatched_sells)} 笔卖出记录早于该股票最早的买入记录，"
+        "无法配对，未计入盈亏统计，请检查日期或补录买入记录。"
+    ]
+
+
+def trade_to_export(trade: Trade) -> dict:
+    return {
+        "trade_date": trade.trade_date.strftime(DATE_FMT),
+        "code": trade.code,
+        "name": trade.name,
+        "side": _SIDE_LABELS[trade.side],
+        "price": trade.price,
+        "note": trade.note,
+    }
+
+
+def build_export(trades: Iterable[Trade], exported_at: str | None = None) -> dict:
+    ordered = sorted(trades, key=lambda t: t.sort_key)
+    return {
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "exported_at": exported_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "count": len(ordered),
+        "note": EXPORT_NOTE,
+        "trades": [trade_to_export(t) for t in ordered],
+    }
+
+
+def _dump_json(payload: Mapping[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
+def export_text(trades: Iterable[Trade], exported_at: str | None = None) -> str:
+    return _dump_json(build_export(trades, exported_at))
+
+
+TEMPLATE_TRADES: tuple[Trade, ...] = (
+    Trade(
+        id=0,
+        code="600519",
+        name="贵州茅台",
+        side=BUY,
+        trade_date=date(2024, 1, 2),
+        price=1680.0,
+        note="建仓",
+        seq=1,
+    ),
+    Trade(
+        id=0,
+        code="600519",
+        name="贵州茅台",
+        side=SELL,
+        trade_date=date(2024, 3, 8),
+        price=1900.0,
+        note="止盈",
+        seq=2,
+    ),
+)
+
+
+def export_template_text() -> str:
+    return export_text(TEMPLATE_TRADES, "示例数据（非真实交易，请改成自己的数据）")
+
+
+def _field_value(row: Mapping[str, Any], field: str) -> Any:
+    for alias in _FIELD_ALIASES[field]:
+        if alias in row and row[alias] not in (None, ""):
+            return row[alias]
+    return None
+
+
+def normalize_import_trade(row: Mapping[str, Any]) -> dict:
+    payload = {field: _field_value(row, field) for field in _FIELD_ALIASES}
+    if not payload["name"]:
+        payload["name"] = payload["code"]
+    return normalize_trade(payload)
+
+
+def extract_import_rows(payload: Any) -> list:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, Mapping):
+        for key in ("trades", "records", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+        known = {alias for aliases in _FIELD_ALIASES.values() for alias in aliases}
+        if known & set(payload):
+            return [payload]
+    raise ValidationError(
+        "无法识别数据格式：需要一个交易记录数组，或包含 trades 数组的对象"
+    )
+
+
+@dataclass(frozen=True)
+class ImportResult:
+    records: list[dict]
+    errors: list[str]
+
+
+def parse_import(payload: Any) -> ImportResult:
+    """解析导入内容：逐条校验，把所有出错行一次性列出来。
+
+    只要有一行不合法就不该落库（errors 非空时由调用方拒绝整个导入），
+    否则用户会得到一份「导入了一半」的流水。
+    """
+    rows = extract_import_rows(payload)
+    if not rows:
+        raise ValidationError("导入内容为空：没有找到任何交易记录")
+    if len(rows) > MAX_IMPORT_RECORDS:
+        raise ValidationError(
+            f"一次最多导入 {MAX_IMPORT_RECORDS} 条记录，当前 {len(rows)} 条"
+        )
+
+    records: list[dict] = []
+    errors: list[str] = []
+    for index, row in enumerate(rows, start=1):
+        try:
+            if not isinstance(row, Mapping):
+                raise ValidationError("记录必须是 JSON 对象")
+            records.append(normalize_import_trade(row))
+        except ValidationError as exc:
+            errors.append(f"第 {index} 条：{exc}")
+    return ImportResult(records=records, errors=errors)
+
+
 def pair_trades(trades: Iterable[Trade]) -> Pairing:
     grouped: dict[str, list[Trade]] = {}
     for trade in trades:
@@ -452,12 +603,7 @@ def build_summary(trades: Sequence[Trade], as_of: date | None = None) -> dict:
     open_lot_count = sum(len(lots) for lots in pairing.open_lots.values())
     positions = build_positions(trades, pairing, as_of)
 
-    warnings: list[str] = []
-    if pairing.unmatched_sells:
-        warnings.append(
-            f"有 {len(pairing.unmatched_sells)} 笔卖出记录早于该股票最早的买入记录，"
-            "无法配对，未计入盈亏统计，请检查日期或补录买入记录。"
-        )
+    warnings: list[str] = collect_warnings(pairing)
 
     stock_names: dict[str, str] = {}
     for trade in sorted(trades, key=lambda t: t.sort_key):

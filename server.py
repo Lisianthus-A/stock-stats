@@ -10,7 +10,8 @@ import webbrowser
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from typing import Sequence
+from urllib.parse import parse_qs, quote, urlparse
 
 import core
 
@@ -20,7 +21,8 @@ DB_PATH = BASE_DIR / "stats.db"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 PORT_ATTEMPTS = 12
-MAX_BODY_BYTES = 1_000_000
+MAX_BODY_BYTES = 8_000_000
+IMPORT_MODES = ("append", "replace")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
@@ -137,6 +139,38 @@ def update_trade(conn: sqlite3.Connection, trade_id: int, data: dict) -> str | N
     return warning
 
 
+def import_trades(
+    conn: sqlite3.Connection,
+    records: Sequence[dict],
+    mode: str,
+) -> int:
+    """写入导入记录。mode=replace 时先清空现有数据。"""
+    if mode == "replace":
+        conn.execute("DELETE FROM trades")
+        conn.execute("DELETE FROM sqlite_sequence WHERE name = 'trades'")
+
+    start = conn.execute("SELECT COALESCE(MAX(seq), 0) AS n FROM trades").fetchone()["n"]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.executemany(
+        "INSERT INTO trades (code, name, side, trade_date, price, note, seq, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                item["code"],
+                item["name"],
+                item["side"],
+                item["trade_date"],
+                item["price"],
+                item["note"],
+                start + offset + 1,
+                now,
+            )
+            for offset, item in enumerate(records)
+        ],
+    )
+    return len(records)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "StockSim/1.0"
     protocol_version = "HTTP/1.1"
@@ -172,6 +206,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_get(path)
             elif method == "POST" and path == "/api/trades":
                 self._handle_create()
+            elif method == "POST" and path == "/api/import":
+                self._handle_import()
             elif method == "PUT" and path.startswith("/api/trades/"):
                 self._handle_update(self._trade_id(path))
             elif method == "DELETE" and path.startswith("/api/trades/"):
@@ -215,6 +251,13 @@ class Handler(BaseHTTPRequestHandler):
             with db() as conn:
                 trades = fetch_trades(conn)
             self._send_json(core.build_summary(trades, as_of))
+        elif path == "/api/export":
+            with db() as conn:
+                trades = fetch_trades(conn)
+            stamp = date.today().strftime("%Y%m%d")
+            self._send_attachment(core.export_text(trades), f"trades-{stamp}.json")
+        elif path == "/api/import-template":
+            self._send_attachment(core.export_template_text(), "trades-template.json")
         else:
             self._send_json({"error": "页面不存在"}, 404)
 
@@ -247,7 +290,40 @@ class Handler(BaseHTTPRequestHandler):
                 raise core.ValidationError(f"未找到要删除的交易记录（id={trade_id}）")
         self._send_json({"deleted_id": trade_id})
 
-    def _read_json(self) -> dict:
+    def _handle_import(self) -> None:
+        body = self._read_json(allow_list=True)
+        if isinstance(body, dict) and "payload" in body and "mode" in body:
+            mode, data = str(body.get("mode") or "append").strip(), body.get("payload")
+        else:
+            mode, data = "append", body
+        if mode not in IMPORT_MODES:
+            raise core.ValidationError("导入模式必须是 append（追加）或 replace（覆盖）")
+
+        result = core.parse_import(data)
+        if result.errors:
+            self._send_json(
+                {
+                    "error": f"有 {len(result.errors)} 条记录无法解析，本次未导入任何数据",
+                    "errors": result.errors,
+                },
+                400,
+            )
+            return
+
+        with db() as conn:
+            imported = import_trades(conn, result.records, mode)
+            trades = fetch_trades(conn)
+        self._send_json(
+            {
+                "mode": mode,
+                "imported": imported,
+                "total": len(trades),
+                "errors": [],
+                "warnings": core.collect_warnings(core.pair_trades(trades)),
+            }
+        )
+
+    def _read_json(self, allow_list: bool = False):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -261,6 +337,10 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise core.ValidationError("请求体不是合法的 JSON") from exc
+        if isinstance(payload, list):
+            if not allow_list:
+                raise core.ValidationError("请求体必须是 JSON 对象")
+            return payload
         if not isinstance(payload, dict):
             raise core.ValidationError("请求体必须是 JSON 对象")
         return payload
@@ -269,6 +349,19 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_attachment(self, text: str, filename: str) -> None:
+        body = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header(
+            "Content-Disposition",
+            f'attachment; filename="{filename}"; filename*=UTF-8\'\'{quote(filename)}',
+        )
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

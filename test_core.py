@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import date
 
@@ -392,6 +393,145 @@ class LoadTradesTests(unittest.TestCase):
         self.assertEqual(payload["hold_days"], 30)
         self.assertEqual(payload["result"], "win")
         self.assertEqual(payload["buy_date"], "2024-01-01")
+
+
+class ExportTests(unittest.TestCase):
+    def sample(self):
+        return [
+            make_trade(3, "A", SELL, "2024-03-01", 40.0, name="甲股", seq=3),
+            make_trade(1, "A", BUY, "2024-01-01", 10.0, name="甲股", seq=1),
+            make_trade(2, "A", BUY, "2024-01-01", 20.0, name="甲股", seq=2, note="加仓"),
+        ]
+
+    def test_export_is_chronological_and_readable(self):
+        payload = core.build_export(self.sample(), "2024-06-30 12:00:00")
+        self.assertEqual(payload["format"], core.EXPORT_FORMAT)
+        self.assertEqual(payload["version"], core.EXPORT_VERSION)
+        self.assertEqual(payload["exported_at"], "2024-06-30 12:00:00")
+        self.assertEqual(payload["count"], 3)
+        self.assertEqual(
+            [row["price"] for row in payload["trades"]], [10.0, 20.0, 40.0]
+        )
+        self.assertEqual(
+            payload["trades"][2],
+            {"trade_date": "2024-03-01", "code": "A", "name": "甲股",
+             "side": "卖出", "price": 40.0, "note": ""},
+        )
+
+    def test_export_hides_internal_ids(self):
+        row = core.build_export(self.sample())["trades"][0]
+        self.assertNotIn("id", row)
+        self.assertNotIn("seq", row)
+        self.assertNotIn("created_at", row)
+
+    def test_export_text_is_indented_utf8_json(self):
+        text = core.export_text(self.sample(), "2024-06-30 12:00:00")
+        self.assertIn('\n  "trades"', text)
+        self.assertIn("甲股", text)
+        self.assertEqual(json.loads(text)["count"], 3)
+
+    def test_template_round_trips(self):
+        result = core.parse_import(json.loads(core.export_template_text()))
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.records), 2)
+        self.assertEqual(result.records[0]["side"], BUY)
+        self.assertEqual(result.records[1]["side"], SELL)
+
+    def test_template_trades_pair_into_one_win(self):
+        result = core.parse_import(json.loads(core.export_template_text()))
+        trades = [
+            core.Trade(id=i, code=r["code"], name=r["name"], side=r["side"],
+                       trade_date=parse_date(r["trade_date"]), price=r["price"],
+                       note=r["note"], seq=i)
+            for i, r in enumerate(result.records, start=1)
+        ]
+        pairing = pair_trades(trades)
+        self.assertEqual(len(pairing.closed), 1)
+        self.assertEqual(pairing.closed[0].profit, 220.0)
+
+
+class ImportTests(unittest.TestCase):
+    def test_accepts_export_object(self):
+        payload = {"format": core.EXPORT_FORMAT, "trades": [
+            {"trade_date": "2024-01-02", "code": "600519", "name": "贵州茅台",
+             "side": "买入", "price": 1680.5, "note": "建仓"},
+        ]}
+        result = core.parse_import(payload)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.records, [{
+            "code": "600519", "name": "贵州茅台", "side": BUY,
+            "trade_date": "2024-01-02", "price": 1680.5, "note": "建仓",
+        }])
+
+    def test_accepts_bare_array_and_single_record(self):
+        row = {"code": "A", "name": "甲", "side": "sell",
+               "date": "2024/1/2", "price": "12"}
+        from_array = core.parse_import([row])
+        from_object = core.parse_import(row)
+        self.assertEqual(from_array.records, from_object.records)
+        self.assertEqual(from_array.records[0]["trade_date"], "2024-01-02")
+        self.assertEqual(from_array.records[0]["price"], 12.0)
+
+    def test_chinese_and_english_side_both_work(self):
+        rows = [
+            {"code": "A", "name": "甲", "side": "卖出", "date": "2024-01-02", "price": 1},
+            {"code": "A", "name": "甲", "side": "sell", "date": "2024-01-03", "price": 1},
+        ]
+        self.assertEqual([r["side"] for r in core.parse_import(rows).records],
+                         [SELL, SELL])
+
+    def test_name_falls_back_to_code(self):
+        result = core.parse_import(
+            [{"code": "600519", "side": "buy", "trade_date": "2024-01-02", "price": 10}]
+        )
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.records[0]["name"], "600519")
+
+    def test_reports_every_bad_row_with_position(self):
+        payload = {"trades": [
+            {"code": "A", "name": "甲", "side": "buy", "trade_date": "2024-01-02", "price": 10},
+            {"code": "B", "name": "乙", "side": "buy", "trade_date": "2024-13-40", "price": 10},
+            {"code": "", "name": "丙", "side": "buy", "trade_date": "2024-01-02", "price": 10},
+            "不是对象",
+            {"code": "D", "name": "丁", "side": "long", "trade_date": "2024-01-02", "price": 10},
+        ]}
+        result = core.parse_import(payload)
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(len(result.errors), 4)
+        self.assertTrue(result.errors[0].startswith("第 2 条"))
+        self.assertTrue(result.errors[1].startswith("第 3 条"))
+        self.assertTrue(result.errors[2].startswith("第 4 条"))
+        self.assertTrue(result.errors[3].startswith("第 5 条"))
+        self.assertIn("JSON 对象", result.errors[2])
+
+    def test_rejects_unusable_payloads(self):
+        for payload in ({}, {"trades": []}, [], "text", 42, {"foo": "bar"}):
+            with self.assertRaises(ValidationError, msg=repr(payload)):
+                core.parse_import(payload)
+
+    def test_rejects_oversized_payload(self):
+        rows = [{"code": "A", "name": "甲", "side": "buy",
+                 "trade_date": "2024-01-02", "price": 10}] * (core.MAX_IMPORT_RECORDS + 1)
+        with self.assertRaises(ValidationError):
+            core.parse_import(rows)
+
+
+class WarningTests(unittest.TestCase):
+    def test_no_warning_without_unmatched_sells(self):
+        pairing = core.pair_trades([
+            make_trade(1, "A", BUY, "2024-01-01", 10.0),
+            make_trade(2, "A", SELL, "2024-02-01", 11.0),
+        ])
+        self.assertEqual(core.collect_warnings(pairing), [])
+
+    def test_warning_counts_unmatched_sells(self):
+        pairing = core.pair_trades([
+            make_trade(1, "A", SELL, "2024-01-01", 10.0),
+            make_trade(2, "A", SELL, "2024-01-02", 10.0),
+        ])
+        warnings = core.collect_warnings(pairing)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("2 笔卖出", warnings[0])
 
 
 if __name__ == "__main__":
