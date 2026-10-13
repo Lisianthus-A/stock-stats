@@ -294,10 +294,10 @@ class SummaryMathTests(unittest.TestCase):
 
 
 class CumulativeReturnTests(unittest.TestCase):
-    """累计收益 = 每笔平仓收益率连乘后的本金倍数 x 100%。
+    """累计收益 = (每笔平仓收益率连乘后 - 1) x 100%。
 
-    1 起始，乘以 (1 + 该笔盈亏率)，结果按百分比展示。
-    注意这是"本金倍数"口径：单笔 -10% 会显示为 90%，而非 -10%。
+    1 起始，乘以 (1 + 该笔盈亏率)，再减去本金 1 后按百分比展示。
+    注意这是"净收益"口径：单笔 -10% 显示为 -10%，而非 90%。
     """
 
     as_of = date(2024, 12, 31)
@@ -309,7 +309,7 @@ class CumulativeReturnTests(unittest.TestCase):
         return build_summary(trades, self.as_of)
 
     def test_documented_example(self):
-        # +100%, +100%, -50%  ->  1 x 2 x 2 x 0.5 = 2  ->  200%
+        # +100%, +100%, -50%  ->  1 x 2 x 2 x 0.5 = 2  ->  (2 - 1) = 1  ->  100%
         summary = self.summary_for([
             ("A", BUY, "2024-01-01", 10.0),
             ("A", SELL, "2024-01-11", 20.0),
@@ -319,16 +319,16 @@ class CumulativeReturnTests(unittest.TestCase):
             ("C", SELL, "2024-02-01", 50.0),
         ])
         self.assertEqual([p["pct"] for p in summary["closed_pairs"]], [100.0, 100.0, -50.0])
-        self.assertEqual(summary["stats"]["cumulative_factor"], 2.0)
-        self.assertEqual(summary["stats"]["cumulative_return"], 200.0)
+        self.assertEqual(summary["stats"]["cumulative_factor"], 1.0)
+        self.assertEqual(summary["stats"]["cumulative_return"], 100.0)
 
     def test_single_trade_matches_its_own_pct(self):
         summary = self.summary_for([
             ("A", BUY, "2024-01-01", 50.0),
             ("A", SELL, "2024-02-01", 45.0),
         ])
-        # -10% -> 0.9 -> 90%
-        self.assertEqual(summary["stats"]["cumulative_return"], 90.0)
+        # -10% -> 0.9 -> (0.9 - 1) x 100 = -10%
+        self.assertEqual(summary["stats"]["cumulative_return"], -10.0)
 
     def test_no_closed_trades_yields_zero(self):
         summary = self.summary_for([("A", BUY, "2024-01-01", 10.0)])
@@ -343,17 +343,18 @@ class CumulativeReturnTests(unittest.TestCase):
             ("B", BUY, "2024-01-01", 100.0),
             ("B", SELL, "2024-03-01", 95.0),
         ])
-        # 复利: 1.2 x 0.95 = 1.14 -> 114%
-        self.assertEqual(summary["stats"]["cumulative_return"], 114.0)
+        # 复利: 1.2 x 0.95 = 1.14 -> (1.14 - 1) x 100 = 14%
+        self.assertEqual(summary["stats"]["cumulative_return"], 14.0)
         # 总盈亏率: (-3)/110 = -2.73%  —— 两者不同
         self.assertEqual(summary["totals"]["overall_pct"], -2.73)
 
-    def test_is_never_negative(self):
+    def test_net_loss_is_negative(self):
         summary = self.summary_for([
             ("A", BUY, "2024-01-01", 100.0),
             ("A", SELL, "2024-02-01", 0.01),
         ])
-        self.assertGreater(summary["stats"]["cumulative_return"], 0.0)
+        # 0.0001 - 1 = -0.9999 -> -99.99%
+        self.assertEqual(summary["stats"]["cumulative_return"], -99.99)
 
     def test_only_closed_trades_compound(self):
         summary = self.summary_for([
@@ -361,8 +362,8 @@ class CumulativeReturnTests(unittest.TestCase):
             ("A", SELL, "2024-02-01", 11.0),
             ("A", BUY, "2024-03-01", 10.0),
         ])
-        # 持仓那笔不参与连乘: 1.1 -> 110%
-        self.assertEqual(summary["stats"]["cumulative_return"], 110.0)
+        # 持仓那笔不参与连乘: 1.1 -> (1.1 - 1) x 100 = 10%
+        self.assertEqual(summary["stats"]["cumulative_return"], 10.0)
         self.assertEqual(summary["totals"]["closed_count"], 1)
 
     def test_multi_buy_fifo_ordering(self):
@@ -373,9 +374,9 @@ class CumulativeReturnTests(unittest.TestCase):
             ("A", SELL, "2024-04-01", 50.0),
         ])
         # 配对 10->40 (+300%) 与 20->50 (+150%)
-        # 1 x 4.0 x 2.5 = 10.0 -> 1000%
+        # 1 x 4.0 x 2.5 = 10.0 -> (10.0 - 1) x 100 = 900%
         self.assertEqual([p["pct"] for p in summary["closed_pairs"]], [300.0, 150.0])
-        self.assertEqual(summary["stats"]["cumulative_return"], 1000.0)
+        self.assertEqual(summary["stats"]["cumulative_return"], 900.0)
 
 
 class LoadTradesTests(unittest.TestCase):

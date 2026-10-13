@@ -554,7 +554,7 @@ def cumulative_factor(closed: Sequence[ClosedPair]) -> float:
     factor = 1.0
     for pair in closed:
         factor *= 1.0 + (pair.sell_price - pair.buy_price) / pair.buy_price
-    return factor
+    return factor - 1.0
 
 
 def build_stats(closed: Sequence[ClosedPair]) -> dict:

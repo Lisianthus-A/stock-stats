@@ -108,8 +108,8 @@ function renderOverview() {
   $('heroPct').className = tone(totals.overall_pct);
 
   const cumulative = stats.cumulative_return;
-  $('heroCumulative').textContent = totals.closed_count ? `${cumulative}%` : '—';
-  $('heroCumulative').className = 'hero-value ' + tone(cumulative - 100);
+  $('heroCumulative').textContent = totals.closed_count ? signedPct(cumulative) : '—';
+  $('heroCumulative').className = 'hero-value ' + tone(cumulative);
   $('heroCumulative').title = totals.closed_count
     ? `每笔平仓收益率连乘：${stats.cumulative_factor} 倍`
     : '暂无已平仓交易';
