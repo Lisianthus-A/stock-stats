@@ -249,7 +249,14 @@ function renderTrades() {
 
 /** 录入框的代码联想与「已平仓」筛选项都来自同一份 stock_names，股票有变化时才重建 */
 function fillStockOptions() {
-  const names = state.summary.stock_names;
+  // 只联想当前持仓股票，不联想已平仓股票
+  const positions = state.summary.positions || [];
+  const names = {};
+  positions.forEach((p) => {
+    if (p.code) {
+      names[p.code] = p.name || p.code;
+    }
+  });
   const codes = Object.keys(names).sort();
   const key = codes.join(' ');
   if (key === state.stockOptionsKey) return;
@@ -261,10 +268,11 @@ function fillStockOptions() {
 
   const select = $('closedCodeFilter');
   const current = select.value;
+  const allCodes = Object.keys(state.summary.stock_names || {}).sort();
   select.innerHTML = '<option value="">全部股票</option>' +
-    codes.map((code) =>
-      `<option value="${esc(code)}">${esc(code)} ${esc(names[code])}</option>`).join('');
-  select.value = codes.includes(current) ? current : '';
+    allCodes.map((code) =>
+      `<option value="${esc(code)}">${esc(code)} ${esc(state.summary.stock_names[code] || code)}</option>`).join('');
+  select.value = allCodes.includes(current) ? current : '';
 }
 
 function renderClosed() {
