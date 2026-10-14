@@ -9,7 +9,10 @@ const state = {
   importPayload: null,
   importCount: 0,
   stockOptionsKey: null,
+  tradePage: 1,
 };
+
+const TRADES_PER_PAGE = 15;
 
 const $ = (id) => document.getElementById(id);
 
@@ -230,7 +233,12 @@ function renderTrades() {
     ? '没有符合筛选条件的交易'
     : '还没有交易记录，先在上方录入一笔';
 
-  $('tradeBody').innerHTML = rows.map((t) => `
+  const totalPages = Math.max(1, Math.ceil(rows.length / TRADES_PER_PAGE));
+  state.tradePage = Math.min(Math.max(state.tradePage, 1), totalPages);
+  const start = (state.tradePage - 1) * TRADES_PER_PAGE;
+  const pageRows = rows.slice(start, start + TRADES_PER_PAGE);
+
+  $('tradeBody').innerHTML = pageRows.map((t) => `
     <tr>
       <td class="mono">${esc(t.trade_date)}</td>
       <td><span class="badge badge-${t.side}">${sideText(t.side)}</span></td>
@@ -245,6 +253,44 @@ function renderTrades() {
         </div>
       </td>
     </tr>`).join('');
+
+  renderTradePager(rows.length, totalPages);
+}
+
+function pagerNumbers(current, totalPages) {
+  const pages = new Set([1, totalPages]);
+  for (let p = current - 1; p <= current + 1; p += 1) {
+    if (p >= 1 && p <= totalPages) pages.add(p);
+  }
+  const sorted = [...pages].sort((a, b) => a - b);
+  const items = [];
+  let prev = 0;
+  sorted.forEach((p) => {
+    if (prev && p - prev > 1) items.push('…');
+    items.push(p);
+    prev = p;
+  });
+  return items;
+}
+
+function renderTradePager(total, totalPages) {
+  const node = $('tradePager');
+  if (total <= TRADES_PER_PAGE) {
+    node.innerHTML = total ? `<span class="pager-info">共 ${total} 条</span>` : '';
+    return;
+  }
+  const current = state.tradePage;
+  const numbers = pagerNumbers(current, totalPages).map((p) =>
+    p === '…'
+      ? '<span class="pager-ellipsis">…</span>'
+      : `<button class="pager-btn${p === current ? ' active' : ''}" data-page="${p}" type="button">${p}</button>`
+  ).join('');
+
+  node.innerHTML = `
+    <button class="pager-btn" data-page="${current - 1}" type="button" ${current === 1 ? 'disabled' : ''}>上一页</button>
+    ${numbers}
+    <button class="pager-btn" data-page="${current + 1}" type="button" ${current === totalPages ? 'disabled' : ''}>下一页</button>
+    <span class="pager-info">共 ${total} 条 ｜ 第 ${current} / ${totalPages} 页</span>`;
 }
 
 /** 录入框的代码联想与「已平仓」筛选项都来自同一份 stock_names，股票有变化时才重建 */
@@ -595,7 +641,17 @@ function bindEvents() {
   });
 
   ['tradeSearch', 'tradeSideFilter'].forEach((id) => {
-    $(id).addEventListener('input', renderTrades);
+    $(id).addEventListener('input', () => {
+      state.tradePage = 1;
+      renderTrades();
+    });
+  });
+
+  $('tradePager').addEventListener('click', (event) => {
+    const page = event.target.dataset?.page;
+    if (!page) return;
+    state.tradePage = +page;
+    renderTrades();
   });
   ['closedCodeFilter', 'closedResultFilter', 'closedSearch'].forEach((id) => {
     $(id).addEventListener('input', renderClosed);
