@@ -10,9 +10,11 @@ const state = {
   importCount: 0,
   stockOptionsKey: null,
   tradePage: 1,
+  closedPage: 1,
 };
 
 const TRADES_PER_PAGE = 15;
+const CLOSED_PER_PAGE = 15;
 
 const $ = (id) => document.getElementById(id);
 
@@ -254,7 +256,7 @@ function renderTrades() {
       </td>
     </tr>`).join('');
 
-  renderTradePager(rows.length, totalPages);
+  renderPager('tradePager', state.tradePage, rows.length, totalPages, TRADES_PER_PAGE);
 }
 
 function pagerNumbers(current, totalPages) {
@@ -273,13 +275,12 @@ function pagerNumbers(current, totalPages) {
   return items;
 }
 
-function renderTradePager(total, totalPages) {
-  const node = $('tradePager');
-  if (total <= TRADES_PER_PAGE) {
+function renderPager(nodeId, current, total, totalPages, perPage) {
+  const node = $(nodeId);
+  if (total <= perPage) {
     node.innerHTML = total ? `<span class="pager-info">共 ${total} 条</span>` : '';
     return;
   }
-  const current = state.tradePage;
   const numbers = pagerNumbers(current, totalPages).map((p) =>
     p === '…'
       ? '<span class="pager-ellipsis">…</span>'
@@ -333,6 +334,10 @@ function renderClosed() {
     if (!keyword) return true;
     return [p.name, p.buy_note, p.sell_note].some((f) => String(f).toLowerCase().includes(keyword));
   });
+  rows.sort((a, b) =>
+    a.sell_date < b.sell_date ? 1
+      : a.sell_date > b.sell_date ? -1
+        : (b.sell_id - a.sell_id));
 
   $('closedCount').textContent = String(pairs.length);
   $('closedEmpty').classList.toggle('hidden', rows.length > 0);
@@ -348,7 +353,12 @@ function renderClosed() {
        ｜ 小计盈亏率 <b class="${tone(profit)}">${signedPct(pct)}</b>`
     : '';
 
-  $('closedBody').innerHTML = rows.map((p) => `
+  const totalPages = Math.max(1, Math.ceil(rows.length / CLOSED_PER_PAGE));
+  state.closedPage = Math.min(Math.max(state.closedPage, 1), totalPages);
+  const start = (state.closedPage - 1) * CLOSED_PER_PAGE;
+  const pageRows = rows.slice(start, start + CLOSED_PER_PAGE);
+
+  $('closedBody').innerHTML = pageRows.map((p) => `
     <tr>
       <td class="mono">${esc(p.code)}</td>
       <td>${esc(p.name)}</td>
@@ -360,6 +370,8 @@ function renderClosed() {
       <td class="num ${tone(p.profit)}">${signedPct(p.pct)}</td>
       <td class="num">${p.hold_days} 天</td>
     </tr>`).join('');
+
+  renderPager('closedPager', state.closedPage, rows.length, totalPages, CLOSED_PER_PAGE);
 }
 
 /* ---------- form ---------- */
@@ -654,7 +666,17 @@ function bindEvents() {
     renderTrades();
   });
   ['closedCodeFilter', 'closedResultFilter', 'closedSearch'].forEach((id) => {
-    $(id).addEventListener('input', renderClosed);
+    $(id).addEventListener('input', () => {
+      state.closedPage = 1;
+      renderClosed();
+    });
+  });
+
+  $('closedPager').addEventListener('click', (event) => {
+    const page = event.target.dataset?.page;
+    if (!page) return;
+    state.closedPage = +page;
+    renderClosed();
   });
 }
 
